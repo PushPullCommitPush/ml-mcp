@@ -242,4 +242,6 @@ Contributions welcome! Please read CONTRIBUTING.md for guidelines.
 
 ## License
 
-MIT License - see LICENSE file for details.
+PolyForm Noncommercial 1.0.0 - free for personal use, contact for commercial licensing.
+
+See [LICENSE](LICENSE) for details.
