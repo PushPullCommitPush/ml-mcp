@@ -332,6 +332,7 @@ src/ml_lab/
 ### Model Hubs
 - Hugging Face Hub
 - Replicate
+- Ollama (local GGUF models)
 
 ## Contributing
 
