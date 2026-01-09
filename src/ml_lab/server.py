@@ -19,6 +19,7 @@ from .backends.local import LocalBackend
 from .backends.mistral_api import MistralAPIBackend
 from .backends.openai_api import OpenAIAPIBackend
 from .backends.together_api import TogetherAPIBackend
+from .backends.vertex_api import VertexAPIBackend
 from .cloud.base import GPUType
 from .cloud.lambda_labs import LambdaLabsProvider
 from .cloud.remote_vps import get_vps_manager
@@ -41,6 +42,7 @@ TRAINING_BACKENDS = {
     "mistral": MistralAPIBackend,
     "together": TogetherAPIBackend,
     "openai": OpenAIAPIBackend,
+    "vertex": VertexAPIBackend,
 }
 
 CLOUD_PROVIDERS = {
@@ -95,7 +97,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Provider name (lambda_labs, runpod, mistral, openai, together, huggingface)",
+                        "description": "Provider name (lambda_labs, runpod, mistral, openai, together, huggingface, gcp)",
                         "enum": [p.value for p in ProviderType],
                     },
                     "api_key": {

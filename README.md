@@ -284,7 +284,8 @@ src/ml_lab/
 │   ├── local.py        # Local GPU training
 │   ├── mistral_api.py  # Mistral fine-tuning API
 │   ├── together_api.py # Together AI API
-│   └── openai_api.py   # OpenAI fine-tuning API
+│   ├── openai_api.py   # OpenAI fine-tuning API
+│   └── vertex_api.py   # Google Vertex AI (Gemini)
 ├── cloud/
 │   ├── base.py         # Cloud provider interface
 │   ├── lambda_labs.py  # Lambda Labs integration
@@ -328,6 +329,7 @@ src/ml_lab/
 - Mistral AI (Mistral, Mixtral, Codestral)
 - Together AI (Llama, Mistral, Qwen)
 - OpenAI (GPT-4o, GPT-3.5)
+- Google Vertex AI (Gemini 1.5 Pro, Gemini 1.5 Flash)
 
 ### Model Hubs
 - Hugging Face Hub
