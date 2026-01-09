@@ -26,6 +26,8 @@ from .cloud.runpod import RunPodProvider
 from .credentials import CredentialVault, ProviderCredential, ProviderType, get_vault
 from .inference.ollama import get_ollama_client
 from .inference.openwebui import get_openwebui_client
+from .inference.thinking import get_thinking_analyzer, AnalysisType, ScheduleFrequency
+from .integrations.codex import get_codex_client
 from .security.audit import AuditAction, AuditCategory, get_audit_log
 from .storage.datasets import get_dataset_manager
 from .storage.experiments import get_experiment_store
@@ -361,7 +363,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="train_launch",
-            description="Launch a training run",
+            description="Launch a training run (optionally using Codex for script generation)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -375,12 +377,17 @@ async def list_tools() -> list[Tool]:
                     },
                     "backend": {
                         "type": "string",
-                        "description": "Training backend (local, mistral, together, openai)",
+                        "description": "Training backend (local, mistral, together, openai, vps:NAME)",
                         "default": "local",
                     },
                     "config": {
                         "type": "object",
                         "description": "Training configuration overrides",
+                    },
+                    "use_codex": {
+                        "type": "boolean",
+                        "description": "Use Codex to generate optimized training script",
+                        "default": False,
                     },
                 },
                 "required": ["experiment_id", "dataset_id"],
@@ -388,13 +395,18 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="train_status",
-            description="Get status of a training run",
+            description="Get status of a training run (auto-analyzes errors with Codex if available)",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "run_id": {
                         "type": "string",
                         "description": "Training run ID",
+                    },
+                    "auto_analyze": {
+                        "type": "boolean",
+                        "description": "Auto-analyze errors with Codex",
+                        "default": True,
                     },
                 },
                 "required": ["run_id"],
@@ -915,6 +927,258 @@ async def list_tools() -> list[Tool]:
                 "required": ["provider", "new_api_key"],
             },
         ),
+        # Codex Integration (Executor LLM delegation)
+        Tool(
+            name="codex_status",
+            description="Check if Codex CLI is available for code execution tasks",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="codex_analyze_error",
+            description="Have Codex analyze an error and suggest fixes",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "error_message": {
+                        "type": "string",
+                        "description": "The error message to analyze",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Additional context (file path, operation)",
+                    },
+                    "log_content": {
+                        "type": "string",
+                        "description": "Relevant log content",
+                    },
+                },
+                "required": ["error_message"],
+            },
+        ),
+        Tool(
+            name="codex_generate_training_script",
+            description="Have Codex generate a training script from experiment config",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "base_model": {
+                        "type": "string",
+                        "description": "Base model to fine-tune",
+                    },
+                    "method": {
+                        "type": "string",
+                        "description": "Training method (lora, qlora, full, sft)",
+                        "default": "qlora",
+                    },
+                    "dataset_path": {
+                        "type": "string",
+                        "description": "Path to training dataset",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Output directory for checkpoints",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "Additional training config (epochs, lr, etc.)",
+                    },
+                },
+                "required": ["base_model", "dataset_path", "output_dir"],
+            },
+        ),
+        Tool(
+            name="codex_fix_code",
+            description="Have Codex fix issues in training or evaluation code",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to fix",
+                    },
+                    "issue_description": {
+                        "type": "string",
+                        "description": "Description of the issue",
+                    },
+                    "error_message": {
+                        "type": "string",
+                        "description": "Associated error message",
+                    },
+                },
+                "required": ["file_path", "issue_description"],
+            },
+        ),
+        Tool(
+            name="codex_optimize_config",
+            description="Have Codex optimize training configuration for quality/speed/memory",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "base_model": {
+                        "type": "string",
+                        "description": "Model being trained",
+                    },
+                    "dataset_size": {
+                        "type": "integer",
+                        "description": "Number of training samples",
+                    },
+                    "gpu_memory_gb": {
+                        "type": "integer",
+                        "description": "Available GPU memory in GB",
+                    },
+                    "current_config": {
+                        "type": "object",
+                        "description": "Current training configuration",
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "Optimization goal (quality, speed, memory)",
+                        "default": "quality",
+                    },
+                },
+                "required": ["base_model", "dataset_size", "gpu_memory_gb", "current_config"],
+            },
+        ),
+        Tool(
+            name="codex_debug_training",
+            description="Have Codex debug training issues from logs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "logs": {
+                        "type": "string",
+                        "description": "Training logs",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "Training configuration",
+                    },
+                    "error": {
+                        "type": "string",
+                        "description": "Specific error if any",
+                    },
+                },
+                "required": ["logs", "config"],
+            },
+        ),
+        Tool(
+            name="codex_run",
+            description="Run an arbitrary task with Codex (for advanced use)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Task description for Codex",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Codex profile (coder, fast, heavy, reasoning)",
+                        "default": "coder",
+                    },
+                    "working_dir": {
+                        "type": "string",
+                        "description": "Working directory for execution",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        ),
+        # Deep Thinking Analysis
+        Tool(
+            name="thinking_analyze",
+            description="Run deep analysis using Ollama reasoning models (DeepSeek R1, QwQ). Analyzes training, experiments, activity, cost, or datasets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "analysis_type": {
+                        "type": "string",
+                        "description": "Type of analysis to perform",
+                        "enum": ["training", "experiment", "activity", "cost", "dataset", "general"],
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": "Context data for analysis (varies by type)",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Ollama model to use (default: deepseek-r1:latest)",
+                    },
+                    "store_report": {
+                        "type": "boolean",
+                        "description": "Whether to save report to disk (default: true)",
+                        "default": True,
+                    },
+                },
+                "required": ["analysis_type", "context"],
+            },
+        ),
+        Tool(
+            name="thinking_schedule",
+            description="Schedule automated deep analysis runs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform",
+                        "enum": ["create", "list", "delete", "toggle"],
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "description": "Type of analysis (for create)",
+                        "enum": ["training", "experiment", "activity", "cost", "dataset"],
+                    },
+                    "frequency": {
+                        "type": "string",
+                        "description": "How often to run (for create)",
+                        "enum": ["after_training", "hourly", "daily", "weekly"],
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Ollama model to use",
+                    },
+                    "schedule_id": {
+                        "type": "string",
+                        "description": "Schedule ID (for delete/toggle)",
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Enable/disable (for toggle)",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="thinking_reports",
+            description="List or retrieve deep analysis reports",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform",
+                        "enum": ["list", "get"],
+                    },
+                    "report_id": {
+                        "type": "string",
+                        "description": "Report ID (for get)",
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "description": "Filter by type (for list)",
+                        "enum": ["training", "experiment", "activity", "cost", "dataset", "general"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max reports to return (for list)",
+                        "default": 20,
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
     ]
 
 
@@ -926,6 +1190,87 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e!s}")]
+
+
+def _generate_basic_training_script(
+    base_model: str,
+    method: str,
+    dataset_path: str,
+    output_dir: str,
+    config: dict[str, Any],
+) -> str:
+    """Generate a basic training script (fallback when Codex is not available)."""
+    epochs = config.get("epochs", 3)
+    lr = config.get("learning_rate", 2e-4)
+    batch_size = config.get("batch_size", 4)
+
+    script = f'''"""Auto-generated training script for {base_model}"""
+import torch
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from peft import LoraConfig, get_peft_model, TaskType
+from trl import SFTTrainer
+
+# Configuration
+MODEL_NAME = "{base_model}"
+DATASET_PATH = "{dataset_path}"
+OUTPUT_DIR = "{output_dir}"
+METHOD = "{method}"
+
+# Load tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    trust_remote_code=True,
+)
+
+# Apply LoRA/QLoRA if specified
+if METHOD in ["lora", "qlora"]:
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
+# Load dataset
+dataset = load_dataset("json", data_files=DATASET_PATH, split="train")
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir=OUTPUT_DIR,
+    num_train_epochs={epochs},
+    per_device_train_batch_size={batch_size},
+    learning_rate={lr},
+    logging_steps=10,
+    save_steps=100,
+    save_total_limit=3,
+    bf16=True,
+    gradient_checkpointing=True,
+    report_to="none",
+)
+
+# Train
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset,
+    tokenizer=tokenizer,
+    max_seq_length=2048,
+)
+
+trainer.train()
+trainer.save_model(OUTPUT_DIR)
+print(f"Model saved to {{OUTPUT_DIR}}")
+'''
+    return script
 
 
 async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1203,10 +1548,17 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return {"status": "error", "message": "Dataset not found"}
 
         backend_name = args.get("backend", "local")
-        if backend_name not in TRAINING_BACKENDS:
-            return {"status": "error", "message": f"Unknown backend: {backend_name}"}
+        use_codex = args.get("use_codex", False)
 
-        backend = TRAINING_BACKENDS[backend_name]()
+        # Check if VPS backend
+        if backend_name.startswith("vps:"):
+            vps_name = backend_name.split(":", 1)[1]
+            vps_manager = get_vps_manager()
+            vps_config = vps_manager.get(vps_name)
+            if not vps_config:
+                return {"status": "error", "message": f"VPS '{vps_name}' not registered"}
+        elif backend_name not in TRAINING_BACKENDS:
+            return {"status": "error", "message": f"Unknown backend: {backend_name}"}
 
         # Build config
         config_overrides = args.get("config", {})
@@ -1228,6 +1580,51 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         output_dir = str(Path.home() / ".cache" / "ml-lab" / "outputs" / run.run_id)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+        # Option C: Use Codex to generate training script if requested
+        codex_script = None
+        if use_codex:
+            codex = get_codex_client()
+            if codex.available:
+                codex_result = await codex.generate_training_script(
+                    base_model=exp.base_model,
+                    method=exp.method,
+                    dataset_path=dataset.path,
+                    output_dir=output_dir,
+                    config=config_overrides,
+                )
+                if codex_result.success:
+                    codex_script = codex_result.output
+                    # Save the Codex-generated script
+                    script_path = Path(output_dir) / "train_codex.py"
+                    script_path.write_text(codex_script)
+
+        # Handle VPS backend
+        if backend_name.startswith("vps:"):
+            vps_name = backend_name.split(":", 1)[1]
+            vps_manager = get_vps_manager()
+
+            # Use Codex script if generated, otherwise use default
+            if codex_script:
+                script_content = codex_script
+            else:
+                # Generate basic training script
+                script_content = _generate_basic_training_script(
+                    exp.base_model, exp.method, dataset.path, output_dir, config_overrides
+                )
+
+            run_id = await vps_manager.launch_training(vps_name, script_content, run.run_id)
+            await store.update_experiment(exp.id, status="running")
+
+            return {
+                "status": "success",
+                "run_id": run_id,
+                "output_dir": output_dir,
+                "backend": backend_name,
+                "codex_generated": codex_script is not None,
+            }
+
+        # Standard backend
+        backend = TRAINING_BACKENDS[backend_name]()
         run_id = await backend.launch(run, dataset.path, output_dir)
 
         await store.update_experiment(exp.id, status="running")
@@ -1237,15 +1634,19 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             "run_id": run_id,
             "output_dir": output_dir,
             "backend": backend_name,
+            "codex_generated": codex_script is not None,
         }
 
     elif name == "train_status":
+        auto_analyze = args.get("auto_analyze", True)
+
         # Try to find the backend that has this run
         for backend_name, backend_cls in TRAINING_BACKENDS.items():
             backend = backend_cls()
             try:
                 run = await backend.get_status(args["run_id"])
-                return {
+
+                result = {
                     "status": "success",
                     "run": {
                         "run_id": run.run_id,
@@ -1256,6 +1657,19 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                         "error_message": run.error_message,
                     },
                 }
+
+                # Option C: Auto-analyze errors with Codex
+                if run.error_message and auto_analyze:
+                    codex = get_codex_client()
+                    if codex.available:
+                        analysis = await codex.analyze_error(
+                            error_message=run.error_message,
+                            context=f"Training run {run.run_id}, backend: {backend_name}",
+                        )
+                        if analysis.success:
+                            result["codex_analysis"] = analysis.output
+
+                return result
             except ValueError:
                 continue
 
@@ -1821,6 +2235,234 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             }
         else:
             return {"status": "error", "message": f"No existing credentials for {args['provider']}"}
+
+    # Codex Integration
+    elif name == "codex_status":
+        codex = get_codex_client()
+        return {
+            "status": "success",
+            "codex": {
+                "available": codex.available,
+                "message": "Codex CLI ready for code execution tasks" if codex.available
+                    else "Codex CLI not found. Install with: npm install -g @anthropic/codex",
+            },
+        }
+
+    elif name == "codex_analyze_error":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.analyze_error(
+            error_message=args["error_message"],
+            context=args.get("context"),
+            log_content=args.get("log_content"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "analysis": result.output,
+            "error": result.error,
+        }
+
+    elif name == "codex_generate_training_script":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.generate_training_script(
+            base_model=args["base_model"],
+            method=args.get("method", "qlora"),
+            dataset_path=args["dataset_path"],
+            output_dir=args["output_dir"],
+            config=args.get("config"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "script": result.output,
+            "error": result.error,
+        }
+
+    elif name == "codex_fix_code":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.fix_code(
+            file_path=args["file_path"],
+            issue_description=args["issue_description"],
+            error_message=args.get("error_message"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "result": result.output,
+            "files_modified": result.files_modified,
+            "error": result.error,
+        }
+
+    elif name == "codex_optimize_config":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.optimize_config(
+            base_model=args["base_model"],
+            dataset_size=args["dataset_size"],
+            gpu_memory_gb=args["gpu_memory_gb"],
+            current_config=args["current_config"],
+            goal=args.get("goal", "quality"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "optimized_config": result.output,
+            "error": result.error,
+        }
+
+    elif name == "codex_debug_training":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.debug_training_issue(
+            logs=args["logs"],
+            config=args["config"],
+            error=args.get("error"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "diagnosis": result.output,
+            "error": result.error,
+        }
+
+    elif name == "codex_run":
+        codex = get_codex_client()
+        if not codex.available:
+            return {"status": "error", "message": "Codex CLI not available"}
+
+        result = await codex.run(
+            prompt=args["prompt"],
+            profile=args.get("profile", "coder"),
+            working_dir=args.get("working_dir"),
+        )
+        return {
+            "status": "success" if result.success else "error",
+            "output": result.output,
+            "files_modified": result.files_modified,
+            "error": result.error,
+        }
+
+    # =========================================================================
+    # Deep Thinking Analysis Tools
+    # =========================================================================
+
+    elif name == "thinking_analyze":
+        analyzer = get_thinking_analyzer()
+        analysis_type = args["analysis_type"]
+        context = args["context"]
+        model = args.get("model")
+        store_report = args.get("store_report", True)
+
+        try:
+            report = await analyzer.analyze(
+                analysis_type=analysis_type,
+                context=context,
+                model=model,
+                store_report=store_report,
+            )
+            return {
+                "status": "success",
+                "report_id": report.report_id,
+                "model_used": report.model_used,
+                "thinking_time_seconds": report.thinking_time_seconds,
+                "analysis": report.analysis,
+                "recommendations": report.recommendations,
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    elif name == "thinking_schedule":
+        analyzer = get_thinking_analyzer()
+        action = args["action"]
+
+        if action == "list":
+            schedules = analyzer.list_schedules()
+            return {
+                "status": "success",
+                "schedules": [s.to_dict() for s in schedules],
+            }
+
+        elif action == "create":
+            analysis_type = args.get("analysis_type")
+            frequency = args.get("frequency")
+            if not analysis_type or not frequency:
+                return {"status": "error", "message": "analysis_type and frequency required for create"}
+
+            schedule = analyzer.schedule(
+                analysis_type=analysis_type,
+                frequency=frequency,
+                model=args.get("model"),
+                config=args.get("config", {}),
+            )
+            return {
+                "status": "success",
+                "schedule": schedule.to_dict(),
+            }
+
+        elif action == "delete":
+            schedule_id = args.get("schedule_id")
+            if not schedule_id:
+                return {"status": "error", "message": "schedule_id required for delete"}
+
+            if analyzer.unschedule(schedule_id):
+                return {"status": "success", "message": f"Deleted schedule {schedule_id}"}
+            return {"status": "error", "message": f"Schedule {schedule_id} not found"}
+
+        elif action == "toggle":
+            schedule_id = args.get("schedule_id")
+            enabled = args.get("enabled")
+            if not schedule_id or enabled is None:
+                return {"status": "error", "message": "schedule_id and enabled required for toggle"}
+
+            if analyzer.toggle_schedule(schedule_id, enabled):
+                return {"status": "success", "message": f"Schedule {schedule_id} {'enabled' if enabled else 'disabled'}"}
+            return {"status": "error", "message": f"Schedule {schedule_id} not found"}
+
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+    elif name == "thinking_reports":
+        analyzer = get_thinking_analyzer()
+        action = args["action"]
+
+        if action == "list":
+            reports = analyzer.list_reports(
+                analysis_type=args.get("analysis_type"),
+                limit=args.get("limit", 20),
+            )
+            return {
+                "status": "success",
+                "count": len(reports),
+                "reports": [
+                    {
+                        "report_id": r["report_id"],
+                        "analysis_type": r["analysis_type"],
+                        "model_used": r["model_used"],
+                        "timestamp": r["timestamp"],
+                        "thinking_time_seconds": r["thinking_time_seconds"],
+                    }
+                    for r in reports
+                ],
+            }
+
+        elif action == "get":
+            report_id = args.get("report_id")
+            if not report_id:
+                return {"status": "error", "message": "report_id required for get"}
+
+            report = analyzer.get_report(report_id)
+            if report:
+                return {"status": "success", "report": report}
+            return {"status": "error", "message": f"Report {report_id} not found"}
+
+        return {"status": "error", "message": f"Unknown action: {action}"}
 
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}

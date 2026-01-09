@@ -202,6 +202,44 @@ Add to your MCP configuration:
 | `creds_expiry_check` | Check credential expiry status |
 | `creds_rotate` | Rotate credentials for a provider |
 
+### Codex Integration (Executor LLM)
+
+| Tool | Description |
+|------|-------------|
+| `codex_status` | Check if Codex CLI is available |
+| `codex_analyze_error` | Have Codex analyze errors and suggest fixes |
+| `codex_generate_training_script` | Generate training script from experiment config |
+| `codex_fix_code` | Have Codex fix issues in training code |
+| `codex_optimize_config` | Optimize training config for quality/speed/memory |
+| `codex_debug_training` | Debug training issues from logs |
+| `codex_run` | Run arbitrary task with Codex |
+
+**Architecture**: Separation of intelligence vs execution:
+- **Planner LLM (Claude)**: Reasoning, architecture, tradeoffs
+- **Executor LLM (Codex)**: Precise code edits + CLI work
+- **World tools (ML Lab)**: Data, training, infra, deployment
+
+### Deep Thinking Analysis (Ollama Reasoning Models)
+
+| Tool | Description |
+|------|-------------|
+| `thinking_analyze` | Run deep analysis with reasoning models (DeepSeek R1, QwQ) |
+| `thinking_schedule` | Schedule automated analysis (after training, daily, weekly) |
+| `thinking_reports` | List and retrieve analysis reports |
+
+**Analysis Types**:
+- `training` - Analyze loss curves, convergence, hyperparameters
+- `experiment` - Compare experiments, suggest improvements
+- `activity` - Review audit logs for patterns/anomalies
+- `cost` - Cost efficiency analysis and recommendations
+- `dataset` - Data quality and training suitability
+
+**Schedule Frequencies**:
+- `after_training` - Auto-analyze when training completes
+- `hourly` / `daily` / `weekly` - Periodic reviews
+
+Reports stored in `~/.cache/ml-lab/reports/` for historical reference.
+
 ## Example Workflow
 
 ```
@@ -238,7 +276,7 @@ I'll monitor progress and let you know when it completes.
 
 ```
 src/ml_lab/
-├── server.py           # MCP server entry point (51 tools)
+├── server.py           # MCP server entry point (61 tools)
 ├── credentials.py      # Encrypted credential vault
 ├── cli.py              # Command-line interface
 ├── backends/
@@ -258,7 +296,10 @@ src/ml_lab/
 │   └── experiments.py  # Experiment tracking
 ├── inference/
 │   ├── ollama.py       # Ollama integration
-│   └── openwebui.py    # Open WebUI integration
+│   ├── openwebui.py    # Open WebUI integration
+│   └── thinking.py     # Deep thinking analysis (DeepSeek R1, QwQ)
+├── integrations/
+│   └── codex.py        # Codex CLI integration (executor LLM)
 ├── security/
 │   └── audit.py        # Audit logging
 └── evals/
