@@ -191,6 +191,17 @@ Add to your MCP configuration:
 | `owui_add_knowledge_file` | Add file to knowledge base |
 | `owui_chat` | Chat through Open WebUI |
 
+### Security
+
+| Tool | Description |
+|------|-------------|
+| `security_audit_log` | View recent audit log entries |
+| `security_audit_summary` | Get audit activity summary |
+| `security_tailscale_status` | Check Tailscale VPN connection |
+| `security_ssh_key_rotate` | Rotate SSH key for a VPS |
+| `creds_expiry_check` | Check credential expiry status |
+| `creds_rotate` | Rotate credentials for a provider |
+
 ## Example Workflow
 
 ```
@@ -227,7 +238,7 @@ I'll monitor progress and let you know when it completes.
 
 ```
 src/ml_lab/
-├── server.py           # MCP server entry point
+├── server.py           # MCP server entry point (51 tools)
 ├── credentials.py      # Encrypted credential vault
 ├── cli.py              # Command-line interface
 ├── backends/
@@ -241,13 +252,15 @@ src/ml_lab/
 │   ├── lambda_labs.py  # Lambda Labs integration
 │   ├── runpod.py       # RunPod integration
 │   ├── modal_provider.py # Modal integration
-│   └── remote_vps.py   # Generic SSH VPS support
+│   └── remote_vps.py   # Generic SSH VPS support (+ Tailscale)
 ├── storage/
 │   ├── datasets.py     # Dataset management
 │   └── experiments.py  # Experiment tracking
 ├── inference/
 │   ├── ollama.py       # Ollama integration
 │   └── openwebui.py    # Open WebUI integration
+├── security/
+│   └── audit.py        # Audit logging
 └── evals/
     └── benchmarks.py   # Evaluation suite
 ```
@@ -258,6 +271,10 @@ src/ml_lab/
 - PBKDF2-SHA256 key derivation (480,000 iterations)
 - Vault file permissions set to 600 (owner read/write only)
 - API keys never logged or transmitted unencrypted
+- **Audit logging**: All sensitive operations logged to `~/.cache/ml-lab/audit.log`
+- **Credential expiry**: Automatic tracking with rotation reminders
+- **Tailscale support**: Optional VPN requirement for VPS connections
+- **SSH key rotation**: Automated rotation with rollback on failure
 
 ## Supported Providers
 
