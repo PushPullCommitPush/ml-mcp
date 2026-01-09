@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -528,9 +529,10 @@ echo "Environment ready"
         # Create run directory and script
         await self.run_command(name, f"mkdir -p {run_dir}")
 
-        # Write script via heredoc
-        escaped_content = script_content.replace("'", "'\"'\"'")
-        write_cmd = f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF"
+        # Write script via base64 to avoid shell injection
+        # (heredoc delimiters in script_content could escape and execute arbitrary commands)
+        encoded_content = base64.b64encode(script_content.encode()).decode()
+        write_cmd = f"echo '{encoded_content}' | base64 -d > {script_path}"
 
         returncode, _, stderr = await self.run_command(name, write_cmd, timeout=30)
         if returncode != 0:
