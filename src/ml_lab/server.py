@@ -26,6 +26,7 @@ from .cloud.runpod import RunPodProvider
 from .credentials import CredentialVault, ProviderCredential, ProviderType, get_vault
 from .inference.ollama import get_ollama_client
 from .inference.openwebui import get_openwebui_client
+from .security.audit import AuditAction, AuditCategory, get_audit_log
 from .storage.datasets import get_dataset_manager
 from .storage.experiments import get_experiment_store
 
@@ -513,6 +514,15 @@ async def list_tools() -> list[Tool]:
                         "type": "number",
                         "description": "Monthly cost for amortized hourly rate calculation",
                     },
+                    "tailscale_only": {
+                        "type": "boolean",
+                        "description": "Require Tailscale VPN connection before accessing",
+                        "default": False,
+                    },
+                    "tailscale_hostname": {
+                        "type": "string",
+                        "description": "Tailscale hostname (e.g. 'gpu-box.tail1234.ts.net')",
+                    },
                 },
                 "required": ["name", "host", "user"],
             },
@@ -822,6 +832,87 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["model", "message"],
+            },
+        ),
+        # Security
+        Tool(
+            name="security_audit_log",
+            description="View recent audit log entries",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max entries to return (default 50)",
+                        "default": 50,
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by category (credential, vps, training, cloud, inference, security)",
+                    },
+                    "failures_only": {
+                        "type": "boolean",
+                        "description": "Only show failed operations",
+                        "default": False,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="security_audit_summary",
+            description="Get a summary of audit activity",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="security_tailscale_status",
+            description="Check Tailscale VPN connection status",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="security_ssh_key_rotate",
+            description="Rotate SSH key for a VPS",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "vps_name": {
+                        "type": "string",
+                        "description": "VPS name to rotate key for",
+                    },
+                    "key_type": {
+                        "type": "string",
+                        "description": "Key type (ed25519 or rsa)",
+                        "default": "ed25519",
+                    },
+                },
+                "required": ["vps_name"],
+            },
+        ),
+        Tool(
+            name="creds_expiry_check",
+            description="Check credential expiry status (expired, expiring soon, healthy)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="creds_rotate",
+            description="Rotate credentials for a provider",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider to rotate",
+                        "enum": [p.value for p in ProviderType],
+                    },
+                    "new_api_key": {
+                        "type": "string",
+                        "description": "New API key",
+                    },
+                    "new_api_secret": {
+                        "type": "string",
+                        "description": "New API secret (if applicable)",
+                    },
+                },
+                "required": ["provider", "new_api_key"],
             },
         ),
     ]
@@ -1267,6 +1358,7 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     # VPS Management
     elif name == "vps_register":
         vps_manager = get_vps_manager()
+        audit = get_audit_log()
         config = vps_manager.register(
             name=args["name"],
             host=args["host"],
@@ -1276,8 +1368,16 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             gpu_type=args.get("gpu_type"),
             gpu_count=args.get("gpu_count", 1),
             monthly_cost_usd=args.get("monthly_cost_usd"),
+            tailscale_only=args.get("tailscale_only", False),
+            tailscale_hostname=args.get("tailscale_hostname"),
         )
         hourly = vps_manager.get_hourly_cost(args["name"])
+        audit.log(
+            AuditCategory.VPS,
+            AuditAction.VPS_REGISTER,
+            target=args["name"],
+            details={"host": args["host"], "tailscale_only": args.get("tailscale_only", False)},
+        )
         return {
             "status": "success",
             "vps": {
@@ -1287,6 +1387,8 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "gpu_type": config.gpu_type,
                 "gpu_count": config.gpu_count,
                 "hourly_cost_usd": hourly,
+                "tailscale_only": config.tailscale_only,
+                "tailscale_hostname": config.tailscale_hostname,
             },
         }
 
@@ -1589,6 +1691,136 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             "status": "success",
             "response": content,
         }
+
+    # Security
+    elif name == "security_audit_log":
+        audit = get_audit_log()
+        category = None
+        if args.get("category"):
+            try:
+                category = AuditCategory(args["category"])
+            except ValueError:
+                pass
+
+        events = audit.get_recent(
+            limit=args.get("limit", 50),
+            category=category,
+            failures_only=args.get("failures_only", False),
+        )
+
+        return {
+            "status": "success",
+            "events": [
+                {
+                    "timestamp": e.timestamp,
+                    "category": e.category,
+                    "action": e.action,
+                    "target": e.target,
+                    "success": e.success,
+                    "error": e.error,
+                    "user": e.user,
+                }
+                for e in events
+            ],
+        }
+
+    elif name == "security_audit_summary":
+        audit = get_audit_log()
+        summary = audit.get_summary()
+        return {
+            "status": "success",
+            "summary": summary,
+        }
+
+    elif name == "security_tailscale_status":
+        vps_manager = get_vps_manager()
+        ts_status = await vps_manager.get_tailscale_status()
+        audit = get_audit_log()
+        audit.log(
+            AuditCategory.SECURITY,
+            AuditAction.TAILSCALE_CHECK,
+            success=ts_status["connected"],
+        )
+        return {
+            "status": "success" if ts_status["connected"] else "warning",
+            "tailscale": {
+                "connected": ts_status["connected"],
+                "self_ip": ts_status["self_ip"],
+            },
+        }
+
+    elif name == "security_ssh_key_rotate":
+        vps_manager = get_vps_manager()
+        audit = get_audit_log()
+        try:
+            result = await vps_manager.rotate_ssh_key(
+                name=args["vps_name"],
+                key_type=args.get("key_type", "ed25519"),
+            )
+            audit.log(
+                AuditCategory.SECURITY,
+                AuditAction.SSH_KEY_ROTATE,
+                target=args["vps_name"],
+                success=True,
+                details={"new_key_path": result["new_key_path"]},
+            )
+            return {
+                "status": "success",
+                "result": result,
+            }
+        except Exception as e:
+            audit.log(
+                AuditCategory.SECURITY,
+                AuditAction.SSH_KEY_ROTATE,
+                target=args["vps_name"],
+                success=False,
+                error=str(e),
+            )
+            return {"status": "error", "message": str(e)}
+
+    elif name == "creds_expiry_check":
+        vault = get_vault()
+        if not vault.is_unlocked:
+            return {"status": "error", "message": "Vault is locked"}
+
+        expiry_status = vault.check_expiry_status()
+        return {
+            "status": "success",
+            "expiry_status": expiry_status,
+            "warnings": {
+                "expired": f"{len(expiry_status['expired'])} credentials have expired" if expiry_status["expired"] else None,
+                "expiring_soon": f"{len(expiry_status['expiring_7_days'])} credentials expire within 7 days" if expiry_status["expiring_7_days"] else None,
+            },
+        }
+
+    elif name == "creds_rotate":
+        vault = get_vault()
+        audit = get_audit_log()
+        if not vault.is_unlocked:
+            return {"status": "error", "message": "Vault is locked"}
+
+        provider = ProviderType(args["provider"])
+        result = vault.rotate_credential(
+            provider=provider,
+            new_api_key=args["new_api_key"],
+            new_api_secret=args.get("new_api_secret"),
+        )
+
+        if result:
+            audit.log(
+                AuditCategory.CREDENTIAL,
+                AuditAction.CRED_ADD,
+                target=args["provider"],
+                details={"rotated": True},
+            )
+            return {
+                "status": "success",
+                "message": f"Credentials rotated for {args['provider']}",
+                "expires_at": result.expires_at,
+                "last_rotated": result.last_rotated,
+            }
+        else:
+            return {"status": "error", "message": f"No existing credentials for {args['provider']}"}
 
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}

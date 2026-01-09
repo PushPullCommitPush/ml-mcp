@@ -27,6 +27,9 @@ class VPSConfig:
     work_dir: str = "~/ml-lab"  # Remote working directory
     conda_env: str | None = None  # Optional conda environment
     python_path: str = "python"  # Python executable
+    # Tailscale settings
+    tailscale_only: bool = False  # Require Tailscale connection
+    tailscale_hostname: str | None = None  # e.g., "gpu-box.tail1234.ts.net"
 
 
 @dataclass
@@ -83,9 +86,49 @@ class RemoteVPSManager:
                 "work_dir": config.work_dir,
                 "conda_env": config.conda_env,
                 "python_path": config.python_path,
+                "tailscale_only": config.tailscale_only,
+                "tailscale_hostname": config.tailscale_hostname,
             }
         with open(self._config_path, "w") as f:
             json.dump(data, f, indent=2)
+
+    async def _check_tailscale_status(self) -> tuple[bool, str | None]:
+        """Check if Tailscale is connected and get current IP."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tailscale", "status", "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+
+            if proc.returncode != 0:
+                return False, None
+
+            status = json.loads(stdout.decode())
+            # Check if we're connected to the tailnet
+            if status.get("BackendState") == "Running":
+                self_ip = status.get("TailscaleIPs", [None])[0]
+                return True, self_ip
+            return False, None
+        except (FileNotFoundError, asyncio.TimeoutError, json.JSONDecodeError):
+            return False, None
+
+    def _get_effective_host(self, config: VPSConfig) -> str:
+        """Get the host to connect to, preferring Tailscale hostname if set."""
+        if config.tailscale_hostname:
+            return config.tailscale_hostname
+        return config.host
+
+    async def _verify_tailscale_if_required(self, config: VPSConfig) -> None:
+        """Verify Tailscale is connected if required for this VPS."""
+        if config.tailscale_only:
+            connected, _ = await self._check_tailscale_status()
+            if not connected:
+                raise RuntimeError(
+                    f"VPS '{config.name}' requires Tailscale connection but Tailscale is not running. "
+                    "Start Tailscale first or disable tailscale_only for this VPS."
+                )
 
     def _get_ssh_key_path(self, config: VPSConfig) -> str | None:
         """Get SSH key path, checking vault if not in config."""
@@ -115,7 +158,9 @@ class RemoteVPSManager:
         if key_path:
             ssh_args.extend(["-i", key_path])
 
-        ssh_args.append(f"{config.user}@{config.host}")
+        # Use Tailscale hostname if configured
+        effective_host = self._get_effective_host(config)
+        ssh_args.append(f"{config.user}@{effective_host}")
         ssh_args.append(command)
 
         return ssh_args
@@ -139,7 +184,9 @@ class RemoteVPSManager:
         if key_path:
             scp_args.extend(["-i", key_path])
 
-        remote_full = f"{config.user}@{config.host}:{remote_path}"
+        # Use Tailscale hostname if configured
+        effective_host = self._get_effective_host(config)
+        remote_full = f"{config.user}@{effective_host}:{remote_path}"
 
         if download:
             scp_args.extend([remote_full, local_path])
@@ -164,7 +211,9 @@ class RemoteVPSManager:
             + (f" -i {self._get_ssh_key_path(config)}" if self._get_ssh_key_path(config) else ""),
         ]
 
-        remote_full = f"{config.user}@{config.host}:{remote_path}"
+        # Use Tailscale hostname if configured
+        effective_host = self._get_effective_host(config)
+        remote_full = f"{config.user}@{effective_host}:{remote_path}"
 
         if download:
             rsync_args.extend([remote_full, local_path])
@@ -185,8 +234,26 @@ class RemoteVPSManager:
         monthly_cost_usd: float | None = None,
         work_dir: str = "~/ml-lab",
         conda_env: str | None = None,
+        tailscale_only: bool = False,
+        tailscale_hostname: str | None = None,
     ) -> VPSConfig:
-        """Register a new VPS host."""
+        """
+        Register a new VPS host.
+
+        Args:
+            name: Unique name for this VPS.
+            host: Public hostname or IP address.
+            user: SSH username.
+            port: SSH port (default 22).
+            ssh_key_path: Path to SSH private key.
+            gpu_type: GPU type (e.g., "rtx_4090", "a100").
+            gpu_count: Number of GPUs.
+            monthly_cost_usd: Monthly cost for amortization calculation.
+            work_dir: Remote working directory.
+            conda_env: Conda environment to activate.
+            tailscale_only: Require Tailscale connection before accessing.
+            tailscale_hostname: Tailscale hostname (e.g., "gpu-box.tail1234.ts.net").
+        """
         config = VPSConfig(
             name=name,
             host=host,
@@ -198,6 +265,8 @@ class RemoteVPSManager:
             monthly_cost_usd=monthly_cost_usd,
             work_dir=work_dir,
             conda_env=conda_env,
+            tailscale_only=tailscale_only,
+            tailscale_hostname=tailscale_hostname,
         )
         self._hosts[name] = config
         self._save_hosts()
@@ -226,6 +295,8 @@ class RemoteVPSManager:
             return VPSStatus(name=name, online=False, error="VPS not registered")
 
         try:
+            # Verify Tailscale if required
+            await self._verify_tailscale_if_required(config)
             # Check connectivity and get system info
             check_script = """
 echo "===ONLINE==="
@@ -316,6 +387,9 @@ echo "===JOBS_END==="
         config = self._hosts.get(name)
         if not config:
             raise ValueError(f"VPS '{name}' not registered")
+
+        # Verify Tailscale if required
+        await self._verify_tailscale_if_required(config)
 
         proc = await asyncio.create_subprocess_exec(
             *self._build_ssh_cmd(config, command),
@@ -545,6 +619,107 @@ echo "Environment ready"
 
         # Assume 730 hours per month (365 * 24 / 12)
         return config.monthly_cost_usd / 730.0
+
+    async def get_tailscale_status(self) -> dict[str, Any]:
+        """Get Tailscale connection status."""
+        connected, self_ip = await self._check_tailscale_status()
+        return {
+            "connected": connected,
+            "self_ip": self_ip,
+        }
+
+    async def rotate_ssh_key(
+        self,
+        name: str,
+        new_key_path: str | None = None,
+        key_type: str = "ed25519",
+        remove_old_from_remote: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Rotate SSH key for a VPS.
+
+        Args:
+            name: VPS name.
+            new_key_path: Path for the new key (auto-generated if not provided).
+            key_type: Key type (ed25519, rsa).
+            remove_old_from_remote: Remove old public key from authorized_keys.
+
+        Returns:
+            Dict with new_key_path and success status.
+        """
+        config = self._hosts.get(name)
+        if not config:
+            raise ValueError(f"VPS '{name}' not registered")
+
+        old_key_path = self._get_ssh_key_path(config)
+        if not old_key_path:
+            raise ValueError(f"No SSH key configured for VPS '{name}'")
+
+        # Generate new key path if not provided
+        if new_key_path is None:
+            key_dir = Path.home() / ".ssh"
+            new_key_path = str(key_dir / f"ml-lab-{name}-{uuid.uuid4().hex[:8]}")
+
+        # Generate new key pair
+        keygen_proc = await asyncio.create_subprocess_exec(
+            "ssh-keygen",
+            "-t", key_type,
+            "-f", new_key_path,
+            "-N", "",  # No passphrase
+            "-C", f"ml-lab-{name}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, keygen_stderr = await keygen_proc.communicate()
+
+        if keygen_proc.returncode != 0:
+            raise RuntimeError(f"Failed to generate new SSH key: {keygen_stderr.decode()}")
+
+        # Read new public key
+        with open(f"{new_key_path}.pub") as f:
+            new_pub_key = f.read().strip()
+
+        # Add new public key to remote authorized_keys (using old key)
+        add_cmd = f'echo "{new_pub_key}" >> ~/.ssh/authorized_keys'
+        returncode, _, stderr = await self.run_command(name, add_cmd, timeout=30)
+
+        if returncode != 0:
+            # Clean up new key files on failure
+            Path(new_key_path).unlink(missing_ok=True)
+            Path(f"{new_key_path}.pub").unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to add new key to remote: {stderr}")
+
+        # Update config to use new key
+        old_key_path_backup = config.ssh_key_path
+        config.ssh_key_path = new_key_path
+        self._save_hosts()
+
+        # Test connection with new key
+        returncode, _, stderr = await self.run_command(name, "echo 'key rotation test'", timeout=15)
+
+        if returncode != 0:
+            # Rollback - restore old key in config
+            config.ssh_key_path = old_key_path_backup
+            self._save_hosts()
+            raise RuntimeError(f"New key verification failed: {stderr}")
+
+        # Remove old public key from remote if requested
+        if remove_old_from_remote and old_key_path_backup:
+            try:
+                with open(f"{old_key_path_backup}.pub") as f:
+                    old_pub_key = f.read().strip().split()[1]  # Get the key part
+                # Remove old key from authorized_keys
+                remove_cmd = f"sed -i.bak '/{old_pub_key[:40]}/d' ~/.ssh/authorized_keys"
+                await self.run_command(name, remove_cmd, timeout=30)
+            except Exception:
+                pass  # Best effort - don't fail if we can't remove old key
+
+        return {
+            "success": True,
+            "new_key_path": new_key_path,
+            "old_key_path": old_key_path_backup,
+            "message": f"SSH key rotated successfully. New key: {new_key_path}",
+        }
 
 
 # Singleton instance
