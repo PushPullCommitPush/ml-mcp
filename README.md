@@ -33,6 +33,13 @@ A comprehensive MCP (Model Context Protocol) server for ML model training, fine-
 - Automatic price comparison across providers
 - Smart routing based on cost and availability
 
+### Remote VPS Support
+- Use any SSH-accessible machine (Hetzner, Hostinger, OVH, home server, university cluster)
+- Automatic environment setup
+- Dataset sync via rsync
+- Training runs in tmux (persistent across disconnects)
+- Amortized hourly cost calculation from monthly fees
+
 ### Cost Estimation
 - Pre-training cost estimates across all providers
 - Real-time pricing queries
@@ -135,6 +142,19 @@ Add to your MCP configuration:
 | `infra_provision` | Provision cloud instance |
 | `infra_terminate` | Terminate instance |
 
+### Remote VPS
+
+| Tool | Description |
+|------|-------------|
+| `vps_register` | Register a VPS (host, user, key, GPU info, monthly cost) |
+| `vps_list` | List all registered VPS machines |
+| `vps_status` | Check VPS status (online, GPU, running jobs) |
+| `vps_unregister` | Remove a VPS from registry |
+| `vps_setup` | Install training dependencies on VPS |
+| `vps_sync` | Sync dataset to VPS |
+| `vps_run` | Run command on VPS |
+| `vps_logs` | Get training logs from VPS |
+
 ## Example Workflow
 
 ```
@@ -148,11 +168,14 @@ Found 15,000 samples. Let me estimate the costs:
 
 [Uses train_estimate]
 
-| Provider    | Time   | Cost   | Availability |
-|-------------|--------|--------|--------------|
-| Local (4090)| ~12h   | $0     | Ready        |
-| Lambda H100 | ~2h    | $5.50  | 3 available  |
-| Together API| ~4h    | $12    | Queued       |
+| Provider      | Time   | Cost   | Availability |
+|---------------|--------|--------|--------------|
+| vps:hetzner-01| ~4h    | $0.28* | Idle         |
+| Local (4090)  | ~12h   | $0     | Ready        |
+| Lambda H100   | ~2h    | $5.50  | 3 available  |
+| Together API  | ~4h    | $12    | Queued       |
+
+*amortized from $200/mo
 
 Which would you prefer?
 
@@ -181,7 +204,8 @@ src/ml_lab/
 │   ├── base.py         # Cloud provider interface
 │   ├── lambda_labs.py  # Lambda Labs integration
 │   ├── runpod.py       # RunPod integration
-│   └── modal_provider.py # Modal integration
+│   ├── modal_provider.py # Modal integration
+│   └── remote_vps.py   # Generic SSH VPS support
 ├── storage/
 │   ├── datasets.py     # Dataset management
 │   └── experiments.py  # Experiment tracking

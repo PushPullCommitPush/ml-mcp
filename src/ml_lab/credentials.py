@@ -46,6 +46,9 @@ class ProviderType(str, Enum):
     # Local
     OLLAMA = "ollama"
 
+    # Remote VPS (generic SSH-accessible machines)
+    REMOTE_VPS = "remote_vps"
+
 
 @dataclass
 class ProviderCredential:

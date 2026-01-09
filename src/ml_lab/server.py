@@ -21,6 +21,7 @@ from .backends.openai_api import OpenAIAPIBackend
 from .backends.together_api import TogetherAPIBackend
 from .cloud.base import GPUType
 from .cloud.lambda_labs import LambdaLabsProvider
+from .cloud.remote_vps import get_vps_manager
 from .cloud.runpod import RunPodProvider
 from .credentials import CredentialVault, ProviderCredential, ProviderType, get_vault
 from .storage.datasets import get_dataset_manager
@@ -469,6 +470,157 @@ async def list_tools() -> list[Tool]:
                 "required": ["provider", "instance_id"],
             },
         ),
+        # Remote VPS
+        Tool(
+            name="vps_register",
+            description="Register a remote VPS for training (any SSH-accessible machine)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Friendly name for the VPS (e.g. 'hetzner-01', 'home-server')",
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Hostname or IP address",
+                    },
+                    "user": {
+                        "type": "string",
+                        "description": "SSH username",
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "SSH port (default 22)",
+                        "default": 22,
+                    },
+                    "ssh_key_path": {
+                        "type": "string",
+                        "description": "Path to SSH private key (optional if using default)",
+                    },
+                    "gpu_type": {
+                        "type": "string",
+                        "description": "GPU type (e.g. 'rtx_4090', 'a100')",
+                    },
+                    "gpu_count": {
+                        "type": "integer",
+                        "description": "Number of GPUs",
+                        "default": 1,
+                    },
+                    "monthly_cost_usd": {
+                        "type": "number",
+                        "description": "Monthly cost for amortized hourly rate calculation",
+                    },
+                },
+                "required": ["name", "host", "user"],
+            },
+        ),
+        Tool(
+            name="vps_list",
+            description="List all registered VPS machines",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="vps_status",
+            description="Check status of a VPS (online, GPU usage, running jobs)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="vps_unregister",
+            description="Remove a VPS from the registry",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name to remove",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="vps_setup",
+            description="Set up training environment on a VPS (installs dependencies)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="vps_sync",
+            description="Sync a dataset to a VPS",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name",
+                    },
+                    "dataset_id": {
+                        "type": "string",
+                        "description": "Dataset ID to sync",
+                    },
+                },
+                "required": ["name", "dataset_id"],
+            },
+        ),
+        Tool(
+            name="vps_run",
+            description="Run a command on a VPS",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run",
+                    },
+                },
+                "required": ["name", "command"],
+            },
+        ),
+        Tool(
+            name="vps_logs",
+            description="Get training logs from a VPS run",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "VPS name",
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Training run ID",
+                    },
+                    "tail_lines": {
+                        "type": "integer",
+                        "description": "Number of lines to show (default 100)",
+                        "default": 100,
+                    },
+                },
+                "required": ["name", "run_id"],
+            },
+        ),
     ]
 
 
@@ -908,6 +1060,125 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         await provider.terminate(args["instance_id"])
 
         return {"status": "success", "message": "Instance terminated"}
+
+    # VPS Management
+    elif name == "vps_register":
+        vps_manager = get_vps_manager()
+        config = vps_manager.register(
+            name=args["name"],
+            host=args["host"],
+            user=args["user"],
+            port=args.get("port", 22),
+            ssh_key_path=args.get("ssh_key_path"),
+            gpu_type=args.get("gpu_type"),
+            gpu_count=args.get("gpu_count", 1),
+            monthly_cost_usd=args.get("monthly_cost_usd"),
+        )
+        hourly = vps_manager.get_hourly_cost(args["name"])
+        return {
+            "status": "success",
+            "vps": {
+                "name": config.name,
+                "host": config.host,
+                "user": config.user,
+                "gpu_type": config.gpu_type,
+                "gpu_count": config.gpu_count,
+                "hourly_cost_usd": hourly,
+            },
+        }
+
+    elif name == "vps_list":
+        vps_manager = get_vps_manager()
+        hosts = vps_manager.list()
+        return {
+            "status": "success",
+            "vps_hosts": [
+                {
+                    "name": h.name,
+                    "host": h.host,
+                    "user": h.user,
+                    "gpu_type": h.gpu_type,
+                    "gpu_count": h.gpu_count,
+                    "hourly_cost_usd": vps_manager.get_hourly_cost(h.name),
+                }
+                for h in hosts
+            ],
+        }
+
+    elif name == "vps_status":
+        vps_manager = get_vps_manager()
+        status = await vps_manager.check_status(args["name"])
+        return {
+            "status": "success" if status.online else "error",
+            "vps_status": {
+                "name": status.name,
+                "online": status.online,
+                "gpu_available": status.gpu_available,
+                "gpu_memory_used_mb": status.gpu_memory_used_mb,
+                "gpu_memory_total_mb": status.gpu_memory_total_mb,
+                "gpu_utilization_pct": status.gpu_utilization_pct,
+                "cpu_load": status.cpu_load,
+                "disk_free_gb": status.disk_free_gb,
+                "running_jobs": status.running_jobs,
+                "error": status.error,
+            },
+        }
+
+    elif name == "vps_unregister":
+        vps_manager = get_vps_manager()
+        removed = vps_manager.unregister(args["name"])
+        if removed:
+            return {"status": "success", "message": f"VPS '{args['name']}' removed"}
+        else:
+            return {"status": "error", "message": f"VPS '{args['name']}' not found"}
+
+    elif name == "vps_setup":
+        vps_manager = get_vps_manager()
+        success, output = await vps_manager.setup_environment(args["name"])
+        return {
+            "status": "success" if success else "error",
+            "output": output,
+        }
+
+    elif name == "vps_sync":
+        vps_manager = get_vps_manager()
+        manager = get_dataset_manager()
+
+        dataset = manager.get(args["dataset_id"])
+        if not dataset:
+            return {"status": "error", "message": "Dataset not found"}
+
+        remote_path = await vps_manager.sync_to_vps(args["name"], dataset.path)
+        return {
+            "status": "success",
+            "local_path": dataset.path,
+            "remote_path": remote_path,
+        }
+
+    elif name == "vps_run":
+        vps_manager = get_vps_manager()
+        returncode, stdout, stderr = await vps_manager.run_command(
+            args["name"],
+            args["command"],
+        )
+        return {
+            "status": "success" if returncode == 0 else "error",
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    elif name == "vps_logs":
+        vps_manager = get_vps_manager()
+        logs = await vps_manager.get_training_logs(
+            args["name"],
+            args["run_id"],
+            args.get("tail_lines", 100),
+        )
+        return {
+            "status": "success",
+            "logs": logs,
+        }
 
     else:
         return {"status": "error", "message": f"Unknown tool: {name}"}
