@@ -24,6 +24,8 @@ from .cloud.lambda_labs import LambdaLabsProvider
 from .cloud.remote_vps import get_vps_manager
 from .cloud.runpod import RunPodProvider
 from .credentials import CredentialVault, ProviderCredential, ProviderType, get_vault
+from .inference.ollama import get_ollama_client
+from .inference.openwebui import get_openwebui_client
 from .storage.datasets import get_dataset_manager
 from .storage.experiments import get_experiment_store
 
@@ -621,6 +623,207 @@ async def list_tools() -> list[Tool]:
                 "required": ["name", "run_id"],
             },
         ),
+        # Ollama
+        Tool(
+            name="ollama_status",
+            description="Check Ollama service status (running, version, GPU)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="ollama_list",
+            description="List all models in Ollama",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="ollama_pull",
+            description="Pull a model from the Ollama registry",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Model name (e.g. 'llama3:8b', 'mistral:latest')",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="ollama_deploy",
+            description="Deploy a GGUF model to Ollama",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the model in Ollama",
+                    },
+                    "gguf_path": {
+                        "type": "string",
+                        "description": "Path to the GGUF file",
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "Optional system prompt to bake in",
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Default temperature",
+                    },
+                },
+                "required": ["name", "gguf_path"],
+            },
+        ),
+        Tool(
+            name="ollama_chat",
+            description="Send a chat message to an Ollama model",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Model name",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "User message",
+                    },
+                    "system": {
+                        "type": "string",
+                        "description": "Optional system prompt",
+                    },
+                },
+                "required": ["model", "message"],
+            },
+        ),
+        Tool(
+            name="ollama_delete",
+            description="Delete a model from Ollama",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Model name to delete",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        # Open WebUI
+        Tool(
+            name="owui_status",
+            description="Check Open WebUI connection status",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="owui_list_models",
+            description="List model configurations in Open WebUI",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="owui_create_model",
+            description="Create a model configuration in Open WebUI",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Display name for the model",
+                    },
+                    "base_model": {
+                        "type": "string",
+                        "description": "Base Ollama model (e.g. 'llama3:latest')",
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "System prompt",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Model description",
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Temperature setting",
+                    },
+                },
+                "required": ["name", "base_model"],
+            },
+        ),
+        Tool(
+            name="owui_delete_model",
+            description="Delete a model configuration from Open WebUI",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model_id": {
+                        "type": "string",
+                        "description": "Model ID to delete",
+                    },
+                },
+                "required": ["model_id"],
+            },
+        ),
+        Tool(
+            name="owui_list_knowledge",
+            description="List knowledge bases in Open WebUI",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="owui_create_knowledge",
+            description="Create a knowledge base in Open WebUI",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Knowledge base name",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="owui_add_knowledge_file",
+            description="Add a file to a knowledge base (PDF, TXT, MD, etc.)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "knowledge_id": {
+                        "type": "string",
+                        "description": "Knowledge base ID",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to file to add",
+                    },
+                },
+                "required": ["knowledge_id", "file_path"],
+            },
+        ),
+        Tool(
+            name="owui_chat",
+            description="Chat through Open WebUI (uses model config + knowledge)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Model ID or name",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "User message",
+                    },
+                },
+                "required": ["model", "message"],
+            },
+        ),
     ]
 
 
@@ -1178,6 +1381,213 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "success",
             "logs": logs,
+        }
+
+    # Ollama
+    elif name == "ollama_status":
+        client = get_ollama_client()
+        status = await client.status()
+        return {
+            "status": "success" if status.running else "error",
+            "ollama": {
+                "running": status.running,
+                "version": status.version,
+                "models_count": status.models_count,
+                "gpu_available": status.gpu_available,
+                "gpu_name": status.gpu_name,
+                "error": status.error,
+            },
+        }
+
+    elif name == "ollama_list":
+        client = get_ollama_client()
+        models = await client.list_models()
+        return {
+            "status": "success",
+            "models": [
+                {
+                    "name": m.name,
+                    "size_gb": round(m.size / 1e9, 2),
+                    "modified_at": m.modified_at,
+                }
+                for m in models
+            ],
+        }
+
+    elif name == "ollama_pull":
+        client = get_ollama_client()
+        progress_messages = []
+        async for progress in client.pull_model(args["name"]):
+            status = progress.get("status", "")
+            if "pulling" in status or "downloading" in status:
+                pct = progress.get("completed", 0) / max(progress.get("total", 1), 1) * 100
+                progress_messages.append(f"{status}: {pct:.1f}%")
+            elif status:
+                progress_messages.append(status)
+        return {
+            "status": "success",
+            "message": f"Model {args['name']} pulled successfully",
+            "progress": progress_messages[-5:] if progress_messages else [],
+        }
+
+    elif name == "ollama_deploy":
+        client = get_ollama_client()
+        params = {}
+        if args.get("temperature"):
+            params["temperature"] = args["temperature"]
+
+        success = await client.deploy_gguf(
+            name=args["name"],
+            gguf_path=args["gguf_path"],
+            system_prompt=args.get("system_prompt"),
+            parameters=params if params else None,
+        )
+        return {
+            "status": "success" if success else "error",
+            "message": f"Model deployed as '{args['name']}'" if success else "Deployment failed",
+        }
+
+    elif name == "ollama_chat":
+        client = get_ollama_client()
+        messages = []
+        if args.get("system"):
+            messages.append({"role": "system", "content": args["system"]})
+        messages.append({"role": "user", "content": args["message"]})
+
+        response = await client.chat(args["model"], messages)
+        return {
+            "status": "success",
+            "response": response.message.content,
+            "model": response.model,
+            "eval_count": response.eval_count,
+        }
+
+    elif name == "ollama_delete":
+        client = get_ollama_client()
+        success = await client.delete_model(args["name"])
+        return {
+            "status": "success" if success else "error",
+            "message": f"Model '{args['name']}' deleted" if success else "Delete failed",
+        }
+
+    # Open WebUI
+    elif name == "owui_status":
+        client = get_openwebui_client()
+        status = await client.status()
+        return {
+            "status": "success" if status.connected else "error",
+            "openwebui": {
+                "connected": status.connected,
+                "version": status.version,
+                "models_count": status.models_count,
+                "knowledge_count": status.knowledge_count,
+                "error": status.error,
+            },
+        }
+
+    elif name == "owui_list_models":
+        client = get_openwebui_client()
+        models = await client.list_models()
+        return {
+            "status": "success",
+            "models": [
+                {
+                    "id": m.id,
+                    "name": m.name,
+                    "base_model": m.base_model_id,
+                    "has_system_prompt": bool(m.params.get("system")),
+                }
+                for m in models
+            ],
+        }
+
+    elif name == "owui_create_model":
+        client = get_openwebui_client()
+        params = {}
+        if args.get("temperature"):
+            params["temperature"] = args["temperature"]
+
+        model = await client.create_model(
+            name=args["name"],
+            base_model_id=args["base_model"],
+            system_prompt=args.get("system_prompt"),
+            description=args.get("description"),
+            params=params if params else None,
+        )
+        return {
+            "status": "success",
+            "model": {
+                "id": model.id,
+                "name": model.name,
+                "base_model": model.base_model_id,
+            },
+        }
+
+    elif name == "owui_delete_model":
+        client = get_openwebui_client()
+        success = await client.delete_model(args["model_id"])
+        return {
+            "status": "success" if success else "error",
+            "message": f"Model '{args['model_id']}' deleted" if success else "Delete failed",
+        }
+
+    elif name == "owui_list_knowledge":
+        client = get_openwebui_client()
+        knowledge = await client.list_knowledge()
+        return {
+            "status": "success",
+            "knowledge_bases": [
+                {
+                    "id": k.id,
+                    "name": k.name,
+                    "description": k.description,
+                    "files_count": len(k.files),
+                }
+                for k in knowledge
+            ],
+        }
+
+    elif name == "owui_create_knowledge":
+        client = get_openwebui_client()
+        kb = await client.create_knowledge(
+            name=args["name"],
+            description=args.get("description", ""),
+        )
+        return {
+            "status": "success",
+            "knowledge": {
+                "id": kb.id,
+                "name": kb.name,
+            },
+        }
+
+    elif name == "owui_add_knowledge_file":
+        client = get_openwebui_client()
+        success = await client.add_file_to_knowledge(
+            args["knowledge_id"],
+            args["file_path"],
+        )
+        return {
+            "status": "success" if success else "error",
+            "message": "File added to knowledge base" if success else "Failed to add file",
+        }
+
+    elif name == "owui_chat":
+        client = get_openwebui_client()
+        response = await client.chat(
+            model=args["model"],
+            messages=[{"role": "user", "content": args["message"]}],
+        )
+        # Extract assistant message from response
+        choices = response.get("choices", [])
+        if choices:
+            content = choices[0].get("message", {}).get("content", "")
+        else:
+            content = str(response)
+
+        return {
+            "status": "success",
+            "response": content,
         }
 
     else:

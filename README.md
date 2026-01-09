@@ -45,6 +45,18 @@ A comprehensive MCP (Model Context Protocol) server for ML model training, fine-
 - Real-time pricing queries
 - Time estimates based on model and dataset size
 
+### Ollama Integration
+- Deploy fine-tuned GGUF models to Ollama
+- Pull models from Ollama registry
+- Chat/inference testing directly from MCP
+- Model management (list, delete, copy)
+
+### Open WebUI Integration
+- Create model presets with system prompts
+- Knowledge base management (RAG)
+- Chat through Open WebUI (applies configs + knowledge)
+- Seamless Ollama ↔ Open WebUI workflow
+
 ## Installation
 
 ```bash
@@ -155,6 +167,30 @@ Add to your MCP configuration:
 | `vps_run` | Run command on VPS |
 | `vps_logs` | Get training logs from VPS |
 
+### Ollama
+
+| Tool | Description |
+|------|-------------|
+| `ollama_status` | Check Ollama status (running, version, GPU) |
+| `ollama_list` | List models in Ollama |
+| `ollama_pull` | Pull model from registry |
+| `ollama_deploy` | Deploy GGUF to Ollama |
+| `ollama_chat` | Chat with a model |
+| `ollama_delete` | Delete a model |
+
+### Open WebUI
+
+| Tool | Description |
+|------|-------------|
+| `owui_status` | Check Open WebUI connection |
+| `owui_list_models` | List model configurations |
+| `owui_create_model` | Create model preset (system prompt, params) |
+| `owui_delete_model` | Delete model configuration |
+| `owui_list_knowledge` | List knowledge bases |
+| `owui_create_knowledge` | Create knowledge base |
+| `owui_add_knowledge_file` | Add file to knowledge base |
+| `owui_chat` | Chat through Open WebUI |
+
 ## Example Workflow
 
 ```
@@ -209,6 +245,9 @@ src/ml_lab/
 ├── storage/
 │   ├── datasets.py     # Dataset management
 │   └── experiments.py  # Experiment tracking
+├── inference/
+│   ├── ollama.py       # Ollama integration
+│   └── openwebui.py    # Open WebUI integration
 └── evals/
     └── benchmarks.py   # Evaluation suite
 ```
