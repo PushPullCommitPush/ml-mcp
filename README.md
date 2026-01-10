@@ -10,7 +10,8 @@ A comprehensive MCP (Model Context Protocol) server for ML model training, fine-
 - Never stores credentials in plaintext
 
 ### Dataset Management
-- Register datasets from local files (JSONL, CSV, Parquet)
+- Register datasets from local files OR client-provided content (JSONL, CSV, Parquet)
+- Upload datasets directly without server filesystem access
 - Automatic schema inference and statistics
 - Train/val/test splitting
 - Template-based transformations
@@ -114,13 +115,14 @@ Add to your MCP configuration:
 | `creds_unlock` | Unlock vault with password |
 | `creds_add` | Add provider credentials |
 | `creds_list` | List configured providers |
-| `creds_test` | Verify credentials work |
+| `creds_test` | Verify credentials work (Lambda Labs, GCP, OpenAI supported) |
 
 ### Datasets
 
 | Tool | Description |
 |------|-------------|
-| `dataset_register` | Register a local dataset file |
+| `dataset_register` | Register a dataset from a local file |
+| `dataset_register_content` | Register a dataset from client-provided content (CSV, JSON, JSONL, Parquet) |
 | `dataset_list` | List all datasets |
 | `dataset_inspect` | View schema and statistics |
 | `dataset_preview` | Preview samples |
