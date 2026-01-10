@@ -6,9 +6,14 @@ A comprehensive MCP server for model training, fine-tuning, and experimentation.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import uuid
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -149,6 +154,29 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["path"],
+            },
+        ),
+        Tool(
+            name="dataset_register_content",
+            description="Register a dataset from client-provided content",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name for the dataset",
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Dataset format (csv, json, jsonl, parquet)",
+                        "enum": ["csv", "json", "jsonl", "parquet"],
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Dataset content as text or base64 (prefix with 'base64:' or use base64 for parquet)",
+                    },
+                },
+                "required": ["format", "content"],
             },
         ),
         Tool(
@@ -1330,12 +1358,135 @@ async def _dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             valid = await client.check_credentials()
             return {"status": "success" if valid else "error", "valid": valid}
 
+        if provider == "openai":
+            cred = vault.get(ProviderType.OPENAI)
+            if not cred or not cred.api_key:
+                return {"status": "error", "message": "OpenAI API key not configured"}
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        "https://api.openai.com/v1/models",
+                        headers={"Authorization": f"Bearer {cred.api_key}"},
+                        timeout=10.0,
+                    )
+                    valid = resp.status_code == 200
+            except Exception:
+                valid = False
+            return {"status": "success" if valid else "error", "valid": valid}
+
+        if provider == "gcp":
+            cred = vault.get(ProviderType.GCP)
+            if not cred or not cred.api_key:
+                return {"status": "error", "message": "GCP API key not configured"}
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        "https://generativelanguage.googleapis.com/v1beta/models",
+                        params={"key": cred.api_key},
+                        timeout=10.0,
+                    )
+                    valid = resp.status_code == 200
+            except Exception:
+                valid = False
+            return {"status": "success" if valid else "error", "valid": valid}
+
         return {"status": "error", "message": f"Testing not implemented for {provider}"}
 
     # Datasets
     elif name == "dataset_register":
         manager = get_dataset_manager()
-        info = await manager.register(args["path"], args.get("name"))
+        path = args["path"]
+        if not Path(path).exists():
+            return {
+                "status": "error",
+                "message": (
+                    f"Dataset file not found on server filesystem: {path}. "
+                    "If the dataset lives on the client, use dataset_register_content to upload content directly."
+                ),
+            }
+        info = await manager.register(path, args.get("name"))
+        return {
+            "status": "success",
+            "dataset_id": info.id,
+            "name": info.name,
+            "num_samples": info.num_samples,
+            "schema": info.schema,
+        }
+
+    elif name == "dataset_register_content":
+        manager = get_dataset_manager()
+        content = args.get("content")
+        if content is None:
+            return {"status": "error", "message": "content is required"}
+
+        format_value = args.get("format")
+        if not format_value:
+            return {"status": "error", "message": "format is required"}
+
+        normalized_format = format_value.lower()
+        supported_formats = {"csv", "json", "jsonl", "parquet"}
+        if normalized_format not in supported_formats:
+            return {
+                "status": "error",
+                "message": f"Unsupported format '{format_value}'. Supported: csv, json, jsonl, parquet.",
+            }
+
+        content_str = content.strip()
+
+        def _is_base64_string(value: str) -> bool:
+            if len(value) % 4 != 0:
+                return False
+            for char in value:
+                if char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=":
+                    return False
+            return True
+
+        def _decode_base64(value: str) -> bytes | None:
+            try:
+                return base64.b64decode(value, validate=True)
+            except (binascii.Error, ValueError):
+                return None
+
+        raw_bytes: bytes | None = None
+        if content_str.startswith("base64:"):
+            decoded = _decode_base64(content_str[len("base64:") :].strip())
+            if decoded is None:
+                return {"status": "error", "message": "Invalid base64 content (base64: prefix used)."}
+            raw_bytes = decoded
+        elif normalized_format == "parquet":
+            decoded = _decode_base64(content_str)
+            if decoded is None:
+                return {"status": "error", "message": "Parquet content must be base64-encoded."}
+            raw_bytes = decoded
+        elif _is_base64_string(content_str):
+            decoded = _decode_base64(content_str)
+            if decoded is not None:
+                raw_bytes = decoded
+
+        normalized_format = "jsonl" if normalized_format == "json" else normalized_format
+
+        if raw_bytes is None:
+            if normalized_format == "jsonl":
+                try:
+                    parsed = json.loads(content_str)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    content_str = "\n".join(json.dumps(item) for item in parsed) + "\n"
+                elif isinstance(parsed, dict):
+                    content_str = json.dumps(parsed) + "\n"
+            raw_bytes = content_str.encode("utf-8")
+
+        upload_dir = manager.data_dir / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        name = args.get("name") or "dataset"
+        safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name)
+        extension_map = {"csv": "csv", "jsonl": "jsonl", "parquet": "parquet"}
+        file_ext = extension_map.get(normalized_format, "jsonl")
+        temp_path = upload_dir / f"{safe_name}_{uuid.uuid4().hex}.{file_ext}"
+        temp_path.write_bytes(raw_bytes)
+
+        info = await manager.register(str(temp_path), name=args.get("name"), format=normalized_format)
         return {
             "status": "success",
             "dataset_id": info.id,

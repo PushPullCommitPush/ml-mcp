@@ -15,7 +15,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .ollama import OllamaClient
+import httpx
+
+from .ollama import OllamaClient, get_ollama_client
 
 
 class AnalysisType(str, Enum):
@@ -103,7 +105,7 @@ class ThinkingAnalyzer:
         ollama_client: OllamaClient | None = None,
         default_model: str | None = None,
     ):
-        self._ollama = ollama_client or OllamaClient()
+        self._ollama = ollama_client or get_ollama_client()
         self._default_model = default_model or self.DEFAULT_MODEL
         self._schedules: dict[str, ScheduledAnalysis] = {}
         self._scheduler_task: asyncio.Task | None = None
@@ -337,15 +339,26 @@ End with a bullet list of concrete recommendations."""
         # Run the analysis
         start_time = datetime.now()
 
-        response = await self._ollama.chat(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response = await self._ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                status = await self._ollama.status()
+                if status.running:
+                    raise RuntimeError(
+                        "Ollama is reachable but /api/chat returned 404. "
+                        f"Check the base URL ({self._ollama.base_url}) points to Ollama, "
+                        "not a proxy or Open WebUI instance."
+                    ) from exc
+            raise
 
         thinking_time = (datetime.now() - start_time).total_seconds()
 
         # Parse response
-        analysis_text = response.get("message", {}).get("content", "")
+        analysis_text = response.message.content
 
         # Extract recommendations (look for bullet points at the end)
         recommendations = []
